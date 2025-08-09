@@ -1,0 +1,639 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ระบบ POS มาลีคาเฟ่ - Version 15</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Sarabun:wght@400;500;700&display=swap');
+        body { font-family: 'Sarabun', sans-serif; }
+        .transition-all { transition: all 0.3s ease; }
+        .unavailable { 
+            filter: grayscale(80%); 
+            cursor: not-allowed !important; 
+            position: relative; 
+            background-color: #f3f4f6;
+        }
+        .unavailable::after { 
+            content: 'หมด'; 
+            position: absolute; 
+            top: 50%; 
+            left: 50%; 
+            transform: translate(-50%, -50%); 
+            background-color: rgba(0, 0, 0, 0.6); 
+            color: white; 
+            padding: 0.25rem 0.75rem; 
+            border-radius: 99px; 
+            font-weight: bold;
+            font-size: 0.875rem;
+        }
+        [v-cloak] { display: none; }
+        
+        /* Print Styles */
+        @media print {
+            body * { visibility: hidden; }
+            #receipt-section, #receipt-section * { visibility: visible; }
+            #receipt-section { 
+                position: absolute; 
+                left: 0; 
+                top: 0; 
+                width: 100%; 
+                margin: 0; 
+                padding: 0;
+                font-family: monospace;
+                font-size: 12px;
+                line-height: 1.4;
+            }
+            @page {
+                size: 80mm auto; /* Adjust width as needed for thermal printers */
+                margin: 5mm;
+            }
+        }
+        #receipt-section table { width: 100%; border-collapse: collapse; }
+        #receipt-section th, #receipt-section td { padding: 2px 0; }
+        #receipt-section .text-center { text-align: center; }
+        #receipt-section .text-right { text-align: right; }
+        #receipt-section .font-bold { font-weight: bold; }
+        #receipt-section hr { border: none; border-top: 1px dashed black; margin: 4px 0; }
+    </style>
+</head>
+<body class="bg-gray-100">
+    <div id="app" class="container mx-auto p-4 md:p-8" v-cloak>
+        
+        <header class="mb-4 text-center">
+            <h1 class="text-4xl font-bold text-gray-800">มาลีคาเฟ่ POS</h1>
+            <p class="text-gray-500">ระบบคิดเงินและจัดการร้าน Version 15</p>
+            <div v-if="loading" class="mt-2 text-sm text-gray-500 flex items-center justify-center">
+                <i class="fas fa-spinner fa-spin mr-2"></i> กำลังเชื่อมต่อกับฐานข้อมูล...
+            </div>
+            <div v-if="error" class="mt-2 text-sm text-red-500 font-bold">{{ error }}</div>
+            <div v-if="!loading && !error" class="mt-2 text-sm text-green-600 font-bold">
+                <i class="fas fa-check-circle"></i> เชื่อมต่อสำเร็จ!
+            </div>
+        </header>
+
+        <!-- View Toggler -->
+        <div class="mb-8 flex justify-center">
+            <div class="bg-gray-200 rounded-lg p-1 flex flex-wrap gap-1">
+                <button @click="currentView = 'pos'" :class="currentView === 'pos' ? 'bg-white text-blue-600 shadow' : 'bg-transparent text-gray-600'" class="px-6 py-2 rounded-lg font-semibold transition-all"><i class="fas fa-cash-register mr-2"></i>หน้าขาย</button>
+                <button @click="currentView = 'management'" :class="currentView === 'management' ? 'bg-white text-blue-600 shadow' : 'bg-transparent text-gray-600'" class="px-6 py-2 rounded-lg font-semibold transition-all"><i class="fas fa-box-open mr-2"></i>จัดการสินค้า</button>
+                <button @click="currentView = 'reporting'" :class="currentView === 'reporting' ? 'bg-white text-blue-600 shadow' : 'bg-transparent text-gray-600'" class="px-6 py-2 rounded-lg font-semibold transition-all"><i class="fas fa-chart-line mr-2"></i>รายงาน</button>
+            </div>
+        </div>
+
+        <div v-if="!loading && !error">
+            <!-- POS View -->
+            <div v-show="currentView === 'pos'">
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-8">
+                    <div class="md:col-span-2">
+                        <h2 class="text-2xl font-bold text-gray-700 mb-4">รายการสินค้า</h2>
+                        <div class="mb-4"><input type="text" v-model="searchQuery" placeholder="ค้นหาสินค้า (ชื่อ)..." class="w-full p-3 border rounded-lg shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500"/></div>
+                        <div class="mb-6 flex flex-wrap gap-2">
+                            <button @click="selectedCategory = 'ทั้งหมด'" :class="selectedCategory === 'ทั้งหมด' ? 'bg-blue-600 text-white shadow-md' : 'bg-white text-gray-700 hover:bg-gray-200'" class="px-4 py-2 text-sm font-semibold rounded-lg transition-all">ทั้งหมด</button>
+                            <button v-for="category in categories" :key="category" @click="selectedCategory = category" :class="selectedCategory === category ? 'bg-blue-600 text-white shadow-md' : 'bg-white text-gray-700 hover:bg-gray-200'" class="px-4 py-2 text-sm font-semibold rounded-lg transition-all">{{ category }}</button>
+                        </div>
+                        <div v-if="Object.keys(groupedProducts).length > 0">
+                            <div v-for="(items, category) in groupedProducts" :key="category" class="mb-8">
+                                <h3 class="text-xl font-bold text-gray-800 border-b-2 border-gray-200 pb-2 mb-4">{{ category }}</h3>
+                                <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
+                                    <div v-for="product in items" :key="product.id" @click="addToCart(product)" :class="{ 'unavailable': !product.isAvailable }" class="bg-white rounded-lg shadow-md p-3 flex flex-col items-center justify-center text-center cursor-pointer hover:shadow-xl hover:-translate-y-1 transition-all h-28">
+                                        <h3 class="font-semibold text-md text-gray-800 flex-grow content-center grid">{{ product.Name }}</h3>
+                                        <p class="text-gray-600 font-bold text-lg mt-2">{{ formatCurrency(product.Price) }}</p>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                         <div v-else class="text-center text-gray-500 py-16">
+                            <i class="fas fa-search fa-3x mb-4"></i>
+                            <p class="text-xl">ไม่พบสินค้าที่ตรงกับเงื่อนไข</p>
+                        </div>
+                    </div>
+                    <div class="md:col-span-1">
+                        <h2 class="text-2xl font-bold text-gray-700 mb-4">ตะกร้าสินค้า</h2>
+                        <div class="bg-white rounded-lg shadow-md p-6 sticky top-8">
+                            <div v-if="cart.length === 0" class="text-center text-gray-500 py-8"><p>ยังไม่มีสินค้าในตะกร้า</p></div>
+                            <div v-else>
+                                <ul>
+                                    <li v-for="item in cart" :key="item.id" class="flex justify-between items-center border-b py-3">
+                                        <div class="flex-grow">
+                                            <p class="font-semibold">{{ item.Name }}</p>
+                                            <div class="flex items-center mt-1">
+                                                <button @click="decreaseQuantity(item)" class="bg-gray-200 w-6 h-6 rounded-full font-bold text-lg flex items-center justify-center">-</button>
+                                                <span class="mx-3 w-8 text-center">{{ item.quantity }}</span>
+                                                <button @click="increaseQuantity(item)" class="bg-gray-200 w-6 h-6 rounded-full font-bold text-lg flex items-center justify-center">+</button>
+                                            </div>
+                                        </div>
+                                        <div class="text-right">
+                                            <p class="font-semibold">{{ formatCurrency(item.Price * item.quantity) }}</p>
+                                            <button @click="removeFromCart(item.id)" class="text-red-500 text-xs hover:text-red-700 mt-1">ลบ</button>
+                                        </div>
+                                    </li>
+                                </ul>
+                                
+                                <!-- Discount Section -->
+                                <div class="mt-4 pt-4 border-t">
+                                    <div class="flex justify-between items-center mb-2">
+                                        <span class="font-semibold">ส่วนลด:</span>
+                                        <button v-if="discountAmount > 0" @click="clearDiscount" class="text-red-500 text-xs hover:text-red-700">ล้างส่วนลด</button>
+                                    </div>
+                                    <div class="flex gap-2">
+                                        <input type="number" v-model.number="discountInput" placeholder="จำนวน" class="w-full p-2 border rounded-lg text-center">
+                                        <button @click="applyDiscount('thb')" class="bg-blue-500 text-white px-4 rounded-lg hover:bg-blue-600">บาท</button>
+                                        <button @click="applyDiscount('percent')" class="bg-orange-500 text-white px-4 rounded-lg hover:bg-orange-600">%</button>
+                                    </div>
+                                </div>
+
+                                <!-- Totals Section -->
+                                <div class="mt-6 pt-4 border-t-2 border-dashed space-y-2 text-lg">
+                                    <div class="flex justify-between"><span>ยอดรวม:</span><span>{{ formatCurrency(subtotal) }}</span></div>
+                                    <div v-if="discountAmount > 0" class="flex justify-between text-red-600">
+                                        <span>ส่วนลด ({{ discountNotes }}):</span>
+                                        <span>- {{ formatCurrency(discountAmount) }}</span>
+                                    </div>
+                                    <div class="flex justify-between font-bold text-2xl"><span>ยอดสุทธิ:</span><span>{{ formatCurrency(totalPrice) }}</span></div>
+                                </div>
+                                
+                                <div class="mt-6 grid gap-2">
+                                    <button @click="showPaymentModal = true" :disabled="cart.length === 0" class="w-full bg-green-500 text-white py-3 rounded-lg hover:bg-green-600 transition-all disabled:bg-gray-400 font-bold text-lg"><i class="fas fa-dollar-sign mr-2"></i>ชำระเงิน</button>
+                                    <button @click="clearCart" class="w-full bg-red-500 text-white py-2 rounded-lg hover:bg-red-600 transition-all">ล้างตะกร้า</button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Management View -->
+            <div v-show="currentView === 'management'">
+                <h2 class="text-2xl font-bold text-gray-700 mb-6">จัดการสินค้า</h2>
+                <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
+                    <!-- Add/Edit Product Form -->
+                    <div class="lg:col-span-1 bg-white p-6 rounded-lg shadow-md">
+                        <h3 class="text-xl font-bold mb-4">{{ editingProduct.id ? 'แก้ไขข้อมูลสินค้า' : 'เพิ่มสินค้าใหม่' }}</h3>
+                        <form @submit.prevent="handleProductSubmit">
+                            <div class="space-y-4">
+                                <input v-model="editingProduct.Name" type="text" placeholder="ชื่อสินค้า" class="w-full p-2 border rounded" required>
+                                <input v-model.number="editingProduct.Price" type="number" placeholder="ราคาขาย" class="w-full p-2 border rounded" required min="0">
+                                <input v-model.number="editingProduct.Cost" type="number" placeholder="ราคาต้นทุน" class="w-full p-2 border rounded" min="0">
+                                <input v-model="editingProduct.Category" type="text" placeholder="หมวดหมู่" class="w-full p-2 border rounded">
+                                <div class="flex items-center">
+                                    <input v-model="editingProduct.isAvailable" type="checkbox" id="isAvailable" class="mr-2 h-4 w-4">
+                                    <label for="isAvailable">สินค้าพร้อมขาย</label>
+                                </div>
+                            </div>
+                            <div class="mt-6 flex gap-2">
+                                <button type="submit" class="w-full bg-blue-500 text-white py-2 rounded-lg hover:bg-blue-600 transition-all font-semibold">{{ editingProduct.id ? 'บันทึกการแก้ไข' : 'เพิ่มสินค้า' }}</button>
+                                <button v-if="editingProduct.id" @click="resetForm" type="button" class="w-full bg-gray-300 text-gray-800 py-2 rounded-lg hover:bg-gray-400 transition-all">ยกเลิก</button>
+                            </div>
+                        </form>
+                    </div>
+
+                    <!-- Products List -->
+                    <div class="lg:col-span-2 bg-white p-6 rounded-lg shadow-md">
+                        <h3 class="text-xl font-bold mb-4">รายการสินค้าทั้งหมด</h3>
+                        <div class="overflow-x-auto">
+                            <table class="w-full text-left">
+                                <thead class="bg-gray-100">
+                                    <tr>
+                                        <th class="p-3">ชื่อ</th>
+                                        <th class="p-3">ราคา</th>
+                                        <th class="p-3">สถานะ</th>
+                                        <th class="p-3">จัดการ</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <tr v-for="product in products" :key="product.id" class="border-b hover:bg-gray-50">
+                                        <td class="p-3 font-semibold">{{ product.Name }}</td>
+                                        <td class="p-3">{{ formatCurrency(product.Price) }}</td>
+                                        <td class="p-3">
+                                            <span :class="product.isAvailable ? 'bg-green-200 text-green-800' : 'bg-red-200 text-red-800'" class="px-2 py-1 text-xs rounded-full font-semibold">{{ product.isAvailable ? 'พร้อมขาย' : 'ไม่พร้อมขาย' }}</span>
+                                        </td>
+                                        <td class="p-3">
+                                            <button @click="selectProductForEdit(product)" class="text-blue-500 hover:text-blue-700 mr-3"><i class="fas fa-edit"></i></button>
+                                            <button @click="deleteProduct(product.id)" class="text-red-500 hover:text-red-700"><i class="fas fa-trash"></i></button>
+                                        </td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Reporting View -->
+            <div v-show="currentView === 'reporting'">
+                <h2 class="text-2xl font-bold text-gray-700 mb-6">รายงานสรุปยอดขาย</h2>
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-6">
+                    <div class="bg-white p-6 rounded-lg shadow-md text-center">
+                        <h3 class="text-lg text-gray-500">ยอดขายวันนี้</h3>
+                        <p class="text-4xl font-bold text-blue-600 mt-2">{{ formatCurrency(salesReport.today) }}</p>
+                    </div>
+                    <div class="bg-white p-6 rounded-lg shadow-md text-center">
+                        <h3 class="text-lg text-gray-500">ยอดขาย 7 วันล่าสุด</h3>
+                        <p class="text-4xl font-bold text-green-600 mt-2">{{ formatCurrency(salesReport.last7days) }}</p>
+                    </div>
+                    <div class="bg-white p-6 rounded-lg shadow-md text-center">
+                        <h3 class="text-lg text-gray-500">ยอดขายเดือนนี้</h3>
+                        <p class="text-4xl font-bold text-purple-600 mt-2">{{ formatCurrency(salesReport.thisMonth) }}</p>
+                    </div>
+                </div>
+
+                <div class="grid grid-cols-1 lg:grid-cols-2 gap-8">
+                    <div class="bg-white p-6 rounded-lg shadow-md">
+                        <h3 class="text-xl font-bold mb-4">สินค้าขายดี 10 อันดับแรก</h3>
+                        <ul v-if="bestSellersReport.length > 0">
+                            <li v-for="(item, index) in bestSellersReport" :key="item.Name" class="flex justify-between items-center py-2 border-b">
+                                <span class="font-semibold">{{ index + 1 }}. {{ item.Name }}</span>
+                                <span class="bg-blue-100 text-blue-800 px-3 py-1 rounded-full font-bold">{{ item.quantity }} ชิ้น</span>
+                            </li>
+                        </ul>
+                        <p v-else class="text-gray-500">ยังไม่มีข้อมูลการขาย</p>
+                    </div>
+                    <div class="bg-white p-6 rounded-lg shadow-md">
+                        <h3 class="text-xl font-bold mb-4">ประวัติการขายล่าสุด</h3>
+                        <div class="overflow-y-auto h-96">
+                            <ul>
+                                <li v-for="sale in salesHistory" :key="sale.id" 
+                                    class="p-3 mb-2 bg-gray-50 rounded-lg flex justify-between items-start"
+                                    :class="{ 'bg-red-50 opacity-60': sale.isCancelled }">
+                                    <div>
+                                        <div class="flex font-semibold" :class="{ 'line-through': sale.isCancelled }">
+                                            <span>{{ formatDateTime(sale.SaleDate) }}</span>
+                                        </div>
+                                         <ul class="text-sm text-gray-600 mt-1 pl-4" :class="{ 'line-through': sale.isCancelled }">
+                                            <li v-for="item in parseSaleItems(sale.Items)" :key="item.Name">{{ item.Name }} ({{ item.quantity }} ชิ้น)</li>
+                                        </ul>
+                                        <div class="text-sm mt-1 pl-4">
+                                            <span v-if="sale.DiscountAmount > 0">ส่วนลด: {{ formatCurrency(sale.DiscountAmount) }} ({{sale.DiscountNotes}})</span>
+                                        </div>
+                                        <div class="font-semibold mt-1 pl-4" :class="{ 'line-through': sale.isCancelled }">
+                                            ยอดสุทธิ: {{ formatCurrency(sale.TotalAmount) }}
+                                        </div>
+                                        <div v-if="sale.isCancelled" class="mt-2 text-red-600 font-semibold text-sm">
+                                            <i class="fas fa-ban mr-1"></i> ยกเลิก: {{ sale.cancelReason }}
+                                        </div>
+                                    </div>
+                                    <div v-if="!sale.isCancelled" class="flex items-center gap-3 ml-auto pl-4">
+                                        <button @click="copyBillToCart(sale)" class="text-blue-500 hover:text-blue-700" title="คัดลอกรายการไปที่ตะกร้า"><i class="fas fa-copy fa-lg"></i></button>
+                                        <button @click="cancelBill(sale.id)" class="text-yellow-600 hover:text-yellow-800" title="ยกเลิกบิลนี้"><i class="fas fa-ban fa-lg"></i></button>
+                                    </div>
+                                </li>
+                            </ul>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Payment Modal -->
+        <div v-if="showPaymentModal" class="fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center z-50 p-4">
+            <div class="bg-white rounded-lg shadow-2xl p-8 w-full max-w-md">
+                <h2 class="text-3xl font-bold text-center mb-2">ชำระเงิน</h2>
+                <p class="text-center text-gray-600 mb-6">ยอดรวมที่ต้องชำระ</p>
+                <p class="text-6xl font-bold text-center text-green-500 mb-6">{{ formatCurrency(totalPrice) }}</p>
+                
+                <div class="mb-4">
+                    <label for="amountReceived" class="block text-lg font-medium text-gray-700 mb-2">รับเงินมา (บาท)</label>
+                    <input type="number" v-model.number="amountReceived" id="amountReceived" @keyup.enter="processPayment" class="w-full p-4 border-2 border-gray-300 rounded-lg text-2xl text-center focus:outline-none focus:ring-2 focus:ring-blue-500" placeholder="0">
+                </div>
+
+                <div v-if="amountReceived > 0 && amountReceived >= totalPrice" class="text-center bg-blue-100 p-4 rounded-lg mb-6">
+                    <p class="text-lg text-blue-800">เงินทอน</p>
+                    <p class="text-4xl font-bold text-blue-800">{{ formatCurrency(amountReceived - totalPrice) }}</p>
+                </div>
+                 <div v-if="amountReceived > 0 && amountReceived < totalPrice" class="text-center bg-red-100 p-4 rounded-lg mb-6">
+                    <p class="text-lg text-red-800 font-bold">จำนวนเงินไม่เพียงพอ</p>
+                </div>
+
+                <div class="grid grid-cols-2 gap-4 mt-4">
+                    <button @click="processPayment" :disabled="!isPaymentValid" class="w-full bg-green-500 text-white py-3 rounded-lg hover:bg-green-600 transition-all disabled:bg-gray-400 font-bold text-lg">ยืนยันการชำระเงิน</button>
+                    <button @click="showPaymentModal = false" class="w-full bg-gray-500 text-white py-3 rounded-lg hover:bg-gray-600 transition-all font-bold text-lg">ยกเลิก</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Hidden Receipt Section for Printing -->
+        <div id="receipt-section" class="hidden">
+            <div class="text-center">
+                <h2 class="font-bold">มาลีคาเฟ่</h2>
+                <p>ใบเสร็จรับเงินอย่างย่อ</p>
+                <p>วันที่: <span id="receipt-date"></span></p>
+                <hr>
+            </div>
+            <table>
+                <thead>
+                    <tr>
+                        <th>รายการ</th>
+                        <th class="text-center">จำนวน</th>
+                        <th class="text-right">ราคา</th>
+                    </tr>
+                </thead>
+                <tbody id="receipt-items">
+                    <!-- Items will be injected here by script -->
+                </tbody>
+            </table>
+            <hr>
+            <div id="receipt-totals">
+                <!-- Totals will be injected here -->
+            </div>
+            <div class="text-center" style="margin-top: 10px;">
+                <p>ขอบคุณที่ใช้บริการ</p>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const { createApp, ref, computed, onMounted, reactive, watch } = Vue;
+
+        createApp({
+            setup() {
+                // --- CONFIGURATION ---
+                const AIRTABLE_API_KEY = 'pat28jbtlN5tFwqXF.49de8d8ad14b0ae4c49cb4cb755f7c73a69c35f93674fdd3ef0ef4c334054495';
+                const AIRTABLE_BASE_ID = 'appEUl8HSN3hyHW3N';
+                const PRODUCTS_TABLE_NAME = 'Products';
+                const SALES_HISTORY_TABLE_NAME = 'SalesHistory';
+
+                // --- STATE ---
+                const loading = ref(true);
+                const error = ref(null);
+                const currentView = ref('pos');
+                const products = ref([]);
+                const cart = ref([]);
+                const salesHistory = ref([]);
+                const searchQuery = ref('');
+                const selectedCategory = ref('ทั้งหมด');
+                const showPaymentModal = ref(false);
+                const amountReceived = ref(null);
+                const editingProduct = reactive({ id: null, Name: '', Price: null, Cost: null, Category: '', isAvailable: true });
+                
+                // New Discount State
+                const discountInput = ref(null);
+                const discountType = ref(null);
+                const discountValue = ref(0);
+                const lastSuccessfulSale = ref(null);
+
+                // --- AIRTABLE API HELPER ---
+                const airtableAPI = async (method, tableName, recordId = '', data = null) => {
+                    let url = `https://api.airtable.com/v0/${AIRTABLE_BASE_ID}/${encodeURIComponent(tableName)}`;
+                    const headers = { 'Authorization': `Bearer ${AIRTABLE_API_KEY}`, 'Content-Type': 'application/json' };
+                    const options = { method: method.toUpperCase(), headers };
+                    if (method.toUpperCase() === 'GET') {
+                        if (recordId) url += `/${recordId}`;
+                        if (data && data.sort) {
+                            const params = new URLSearchParams();
+                            data.sort.forEach((s, i) => {
+                                params.append(`sort[${i}][field]`, s.field);
+                                params.append(`sort[${i}][direction]`, s.direction);
+                            });
+                            if (params.toString()) url += `?${params.toString()}`;
+                        }
+                    } else {
+                        if (recordId && method.toUpperCase() === 'DELETE') url += `/${recordId}`;
+                        if (data) options.body = JSON.stringify(data);
+                    }
+                    try {
+                        const response = await fetch(url, options);
+                        if (!response.ok) {
+                            const errData = await response.json();
+                            throw new Error(errData.error?.message || `Airtable API Error: ${response.status}`);
+                        }
+                        return response.json().catch(() => ({}));
+                    } catch (e) {
+                        console.error(`Airtable API Error (${method}) on ${tableName}:`, e);
+                        error.value = `การเชื่อมต่อ Airtable ล้มเหลว: ${e.message}.`;
+                        Swal.fire('เกิดข้อผิดพลาด', `ไม่สามารถดำเนินการกับ Airtable ได้: ${e.message}`, 'error');
+                        return null;
+                    }
+                };
+
+                // --- DATA FETCHING ---
+                const fetchAllData = async () => {
+                    loading.value = true;
+                    error.value = null;
+                    const productsPromise = airtableAPI('GET', PRODUCTS_TABLE_NAME, '', {sort: [{field: "Name", direction: "asc"}]});
+                    const salesHistoryPromise = airtableAPI('GET', SALES_HISTORY_TABLE_NAME, '', {sort: [{field: "SaleDate", direction: "desc"}]});
+                    const [productsData, salesHistoryData] = await Promise.all([productsPromise, salesHistoryPromise]);
+                    if (productsData && productsData.records) {
+                        products.value = productsData.records.map(record => ({ id: record.id, ...record.fields }));
+                    } else {
+                         error.value = 'ไม่สามารถโหลดข้อมูลสินค้าได้';
+                    }
+                    if (salesHistoryData && salesHistoryData.records) {
+                        salesHistory.value = salesHistoryData.records.map(record => ({ id: record.id, ...record.fields }));
+                    } else {
+                        console.warn('Could not load sales history.');
+                    }
+                    loading.value = false;
+                };
+
+                onMounted(fetchAllData);
+
+                // --- COMPUTED PROPERTIES ---
+                const categories = computed(() => [...new Set(products.value.map(p => p.Category).filter(Boolean))]);
+                const filteredProducts = computed(() => {
+                    return products.value.filter(p => {
+                        const matchesCategory = selectedCategory.value === 'ทั้งหมด' || p.Category === selectedCategory.value;
+                        const matchesSearch = p.Name && p.Name.toLowerCase().includes(searchQuery.value.toLowerCase());
+                        return matchesCategory && matchesSearch;
+                    });
+                });
+                const groupedProducts = computed(() => {
+                    return filteredProducts.value.reduce((groups, product) => {
+                        const category = product.Category || 'ไม่มีหมวดหมู่';
+                        if (!groups[category]) groups[category] = [];
+                        groups[category].push(product);
+                        return groups;
+                    }, {});
+                });
+                const subtotal = computed(() => cart.value.reduce((total, item) => total + (item.Price * item.quantity), 0));
+                const discountAmount = computed(() => {
+                    if (!discountType.value || !discountValue.value) return 0;
+                    if (discountType.value === 'percent') {
+                        return (subtotal.value * discountValue.value) / 100;
+                    }
+                    if (discountType.value === 'thb') {
+                        return discountValue.value > subtotal.value ? subtotal.value : discountValue.value;
+                    }
+                    return 0;
+                });
+                const discountNotes = computed(() => {
+                    if (discountType.value === 'percent') return `${discountValue.value}%`;
+                    if (discountType.value === 'thb') return `${discountValue.value} บาท`;
+                    return '';
+                });
+                const totalPrice = computed(() => {
+                    const finalPrice = subtotal.value - discountAmount.value;
+                    return finalPrice < 0 ? 0 : finalPrice;
+                });
+                const isPaymentValid = computed(() => amountReceived.value !== null && amountReceived.value >= totalPrice.value);
+                const salesReport = computed(() => {
+                    const now = new Date();
+                    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+                    const startOfThisMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+                    const sevenDaysAgo = new Date(now);
+                    sevenDaysAgo.setDate(now.getDate() - 7);
+                    let todaySales = 0, monthSales = 0, last7DaysSales = 0;
+                    const activeSales = salesHistory.value.filter(sale => !sale.isCancelled);
+                    activeSales.forEach(sale => {
+                        if(!sale.SaleDate) return;
+                        const saleDate = new Date(sale.SaleDate);
+                        if (saleDate >= today) todaySales += sale.TotalAmount;
+                        if (saleDate >= startOfThisMonth) monthSales += sale.TotalAmount;
+                        if (saleDate >= sevenDaysAgo) last7DaysSales += sale.TotalAmount;
+                    });
+                    return { today: todaySales, thisMonth: monthSales, last7days: last7DaysSales };
+                });
+                const bestSellersReport = computed(() => {
+                    const itemCounts = {};
+                    const activeSales = salesHistory.value.filter(sale => !sale.isCancelled);
+                    activeSales.forEach(sale => {
+                        if (sale.Items && typeof sale.Items === 'string' && sale.Items.trim().startsWith('[')) {
+                            try {
+                                const items = JSON.parse(sale.Items);
+                                if (Array.isArray(items)) {
+                                    items.forEach(item => {
+                                        if (item && item.Name && typeof item.quantity === 'number') {
+                                           if (!itemCounts[item.Name]) itemCounts[item.Name] = 0;
+                                           itemCounts[item.Name] += item.quantity;
+                                        }
+                                    });
+                                }
+                            } catch(e) { console.warn(`Skipping malformed sale item data for sale ID: ${sale.id}`); }
+                        }
+                    });
+                    return Object.entries(itemCounts)
+                        .map(([Name, quantity]) => ({ Name, quantity }))
+                        .sort((a, b) => b.quantity - a.quantity)
+                        .slice(0, 10);
+                });
+
+                // --- METHODS ---
+                const formatCurrency = (val) => new Intl.NumberFormat('th-TH', { style: 'currency', currency: 'THB' }).format(val || 0);
+                const formatDateTime = (isoString) => isoString ? new Date(isoString).toLocaleString('th-TH') : '';
+                const parseSaleItems = (jsonString) => {
+                    if (!jsonString || typeof jsonString !== 'string' || !jsonString.trim().startsWith('[')) return [];
+                    try { return Array.isArray(JSON.parse(jsonString)) ? JSON.parse(jsonString) : []; } catch { return []; }
+                };
+                const addToCart = (product) => {
+                    if (!product.isAvailable) { Swal.fire('ขออภัย', 'สินค้านี้หมด', 'warning'); return; }
+                    const itemInCart = cart.value.find(i => i.id === product.id);
+                    if (itemInCart) itemInCart.quantity++;
+                    else cart.value.push({ ...product, quantity: 1 });
+                };
+                const decreaseQuantity = (item) => {
+                    if (item.quantity > 1) item.quantity--;
+                    else removeFromCart(item.id);
+                };
+                const increaseQuantity = (item) => { item.quantity++; };
+                const removeFromCart = (id) => { cart.value = cart.value.filter(i => i.id !== id); };
+                const clearDiscount = () => {
+                    discountInput.value = null;
+                    discountType.value = null;
+                    discountValue.value = 0;
+                };
+                const clearCart = () => {
+                    cart.value = [];
+                    amountReceived.value = null;
+                    clearDiscount();
+                };
+                const applyDiscount = (type) => {
+                    if (discountInput.value > 0) {
+                        discountType.value = type;
+                        discountValue.value = discountInput.value;
+                    }
+                };
+                const printReceipt = () => {
+                    if (!lastSuccessfulSale.value) return;
+                    const sale = lastSuccessfulSale.value;
+                    document.getElementById('receipt-date').innerText = new Date().toLocaleString('th-TH');
+                    const itemsTbody = document.getElementById('receipt-items');
+                    itemsTbody.innerHTML = '';
+                    sale.items.forEach(item => {
+                        const row = `<tr><td>${item.Name}</td><td class="text-center">${item.quantity}</td><td class="text-right">${(item.Price * item.quantity).toFixed(2)}</td></tr>`;
+                        itemsTbody.innerHTML += row;
+                    });
+                    const totalsDiv = document.getElementById('receipt-totals');
+                    totalsDiv.innerHTML = `<div style="display: flex; justify-content: space-between;"><span>ยอดรวม:</span><span>${sale.subtotal.toFixed(2)}</span></div>
+                        ${sale.discountAmount > 0 ? `<div style="display: flex; justify-content: space-between;"><span>ส่วนลด (${sale.discountNotes}):</span><span>-${sale.discountAmount.toFixed(2)}</span></div>` : ''}
+                        <div style="display: flex; justify-content: space-between; font-weight: bold;"><span>ยอดสุทธิ:</span><span>${sale.totalAmount.toFixed(2)}</span></div>`;
+                    window.print();
+                };
+                const processPayment = async () => {
+                    if (!isPaymentValid.value) { Swal.fire('ผิดพลาด', 'กรุณารับเงินให้เพียงพอกับยอดชำระ', 'error'); return; }
+                    Swal.fire({ title: 'กำลังบันทึกการขาย...', allowOutsideClick: false, didOpen: () => Swal.showLoading() });
+                    const saleData = {
+                        Items: JSON.stringify(cart.value.map(i => ({ Name: i.Name, quantity: i.quantity, Price: i.Price }))),
+                        Subtotal: subtotal.value,
+                        DiscountAmount: discountAmount.value,
+                        DiscountNotes: discountNotes.value,
+                        TotalAmount: totalPrice.value
+                    };
+                    const saleResult = await airtableAPI('POST', SALES_HISTORY_TABLE_NAME, '', { records: [{ fields: saleData }] });
+                    if (saleResult) {
+                        lastSuccessfulSale.value = { items: [...cart.value], subtotal: subtotal.value, discountAmount: discountAmount.value, discountNotes: discountNotes.value, totalAmount: totalPrice.value };
+                        Swal.fire({ title: 'สำเร็จ!', text: 'บันทึกการขายเรียบร้อย', icon: 'success', showCancelButton: true, confirmButtonText: 'พิมพ์ใบเสร็จ', cancelButtonText: 'ปิด' })
+                            .then((result) => { if (result.isConfirmed) printReceipt(); });
+                    } else {
+                        Swal.fire('ล้มเหลว', 'ไม่สามารถบันทึกข้อมูลการขายได้', 'error');
+                        return;
+                    }
+                    clearCart();
+                    showPaymentModal.value = false;
+                    await fetchAllData();
+                };
+                const resetForm = () => { Object.assign(editingProduct, { id: null, Name: '', Price: null, Cost: null, Category: '', isAvailable: true }); };
+                const selectProductForEdit = (product) => { Object.assign(editingProduct, product); window.scrollTo(0, 0); };
+                const handleProductSubmit = async () => {
+                    const fields = { ...editingProduct };
+                    delete fields.id;
+                    const result = editingProduct.id ?
+                        await airtableAPI('PATCH', PRODUCTS_TABLE_NAME, '', { records: [{ id: editingProduct.id, fields }] }) :
+                        await airtableAPI('POST', PRODUCTS_TABLE_NAME, '', { records: [{ fields }] });
+                    if (result) {
+                        Swal.fire('สำเร็จ', `บันทึกข้อมูลสินค้าเรียบร้อย`, 'success');
+                        await fetchAllData();
+                        resetForm();
+                    }
+                };
+                const deleteProduct = async (id) => {
+                    const { isConfirmed } = await Swal.fire({ title: 'แน่ใจหรือไม่?', text: "คุณจะไม่สามารถกู้คืนข้อมูลสินค้านี้ได้!", icon: 'warning', showCancelButton: true, confirmButtonColor: '#d33', cancelButtonColor: '#3085d6', confirmButtonText: 'ใช่, ลบเลย!', cancelButtonText: 'ยกเลิก' });
+                    if (isConfirmed) {
+                        const result = await airtableAPI('DELETE', PRODUCTS_TABLE_NAME, id);
+                        if (result) { Swal.fire('ลบแล้ว!', 'สินค้าถูกลบออกจากระบบแล้ว', 'success'); await fetchAllData(); }
+                    }
+                };
+                const cancelBill = async (saleId) => {
+                    const { value: reason } = await Swal.fire({ title: 'ระบุเหตุผลการยกเลิกบิล', input: 'text', inputPlaceholder: 'เช่น คิดเงินผิด, ลูกค้าเปลี่ยนใจ...', inputValidator: (v) => !v && 'กรุณาระบุเหตุผล!', showCancelButton: true, confirmButtonText: 'ยืนยันการยกเลิก', cancelButtonText: 'ไม่' });
+                    if (reason) {
+                        const result = await airtableAPI('PATCH', SALES_HISTORY_TABLE_NAME, '', { records: [{ id: saleId, fields: { isCancelled: true, cancelReason: reason } }] });
+                        if (result) { Swal.fire('สำเร็จ!', 'บิลถูกยกเลิกแล้ว', 'success'); await fetchAllData(); }
+                    }
+                };
+                const copyBillToCart = async (sale) => {
+                    if (cart.value.length > 0) {
+                        const { isConfirmed } = await Swal.fire({ title: 'ตะกร้าสินค้าไม่ว่าง', text: 'ต้องการล้างตะกร้าปัจจุบันเพื่อคัดลอกบิลใหม่หรือไม่?', icon: 'question', showCancelButton: true, confirmButtonText: 'ใช่, ล้างเลย', cancelButtonText: 'ไม่' });
+                        if (!isConfirmed) return;
+                    }
+                    clearCart();
+                    const itemsToCopy = parseSaleItems(sale.Items);
+                    if (itemsToCopy.length === 0) { Swal.fire('ผิดพลาด', 'ไม่พบรายการสินค้าในบิลนี้', 'error'); return; }
+                    itemsToCopy.forEach(itemToCopy => {
+                        const product = products.value.find(p => p.Name === itemToCopy.Name);
+                        if (product) cart.value.push({ ...product, quantity: itemToCopy.quantity });
+                        else console.warn(`Product "${itemToCopy.Name}" not found. Skipping.`);
+                    });
+                    currentView.value = 'pos';
+                    Swal.fire({ toast: true, position: 'top', icon: 'success', title: 'คัดลอกรายการไปที่ตะกร้าแล้ว', showConfirmButton: false, timer: 2000 });
+                };
+                watch(showPaymentModal, (nv) => { if (!nv) amountReceived.value = null; });
+
+                return { loading, error, currentView, products, cart, salesHistory, searchQuery, selectedCategory, categories, groupedProducts, totalPrice, formatCurrency, addToCart, decreaseQuantity, increaseQuantity, removeFromCart, clearCart, showPaymentModal, amountReceived, processPayment, isPaymentValid, editingProduct, resetForm, selectProductForEdit, handleProductSubmit, deleteProduct, salesReport, bestSellersReport, formatDateTime, parseSaleItems, cancelBill, copyBillToCart, subtotal, discountInput, discountAmount, discountNotes, applyDiscount, clearDiscount, printReceipt };
+            }
+        }).mount('#app');
+    </script>
+</body>
+</html>
