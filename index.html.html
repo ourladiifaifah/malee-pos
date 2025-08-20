@@ -370,11 +370,13 @@
                 const amountReceived = ref(null);
                 const editingProduct = reactive({ id: null, Name: '', Price: null, Cost: null, Category: '', isAvailable: true });
                 
-                // New Discount State
-                const discountInput = ref(null);
-                const discountType = ref(null);
-                const discountValue = ref(0);
-                const lastSuccessfulSale = ref(null);
+                // --- DISCOUNT STATE ---
+                const discountInput = ref(null); // user-entered discount amount
+                const discountType = ref(null);  // 'percent' or 'thb'
+                const discountValue = ref(0);    // normalized discount value
+
+                // --- LAST SALE STATE ---
+                const lastSuccessfulSale = ref(null); // stores details of the most recent sale
 
                 // --- AIRTABLE API HELPER ---
                 const airtableAPI = async (method, tableName, recordId = '', data = null) => {
